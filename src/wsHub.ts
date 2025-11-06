@@ -1,17 +1,36 @@
+import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ServerEnvelope } from './types';
 import { short } from './utils';
 import { getRecentTrades } from './store';
 
 export class WsHub {
+    private httpServer: http.Server;
     private wss: WebSocketServer;
     private clients = new Set<WebSocket>();
 
     constructor(port: number) {
-        this.wss = new WebSocketServer({ port });
-        console.log(`🌐 WS listening on port ${port}`);
+        // tiny health HTTP server (Render likes this)
+        this.httpServer = http.createServer((req, res) => {
+            if (req.url === '/healthz') {
+                res.writeHead(200, { 'content-type': 'text/plain' });
+                res.end('ok');
+                return;
+            }
+            res.writeHead(200, { 'content-type': 'text/plain' });
+            res.end('polymarket live ws');
+        });
+
+        // attach ws to the same HTTP server (plain ws inside; Render handles TLS)
+        this.wss = new WebSocketServer({ server: this.httpServer });
+
+        this.httpServer.listen(port, () => {
+            console.log(`🌐 WS listening on port ${port} (HTTP upgrade on same server)`);
+        });
+
         this.wss.on('connection', (ws) => this.onConnection(ws));
 
+        // keep-alive
         setInterval(() => this.pingSweep(), 30_000);
     }
 
@@ -46,7 +65,6 @@ export class WsHub {
         }
     }
 
-    // Send to a single client
     sendTo(ws: WebSocket, env: ServerEnvelope) {
         try {
             ws.send(JSON.stringify(env));
@@ -58,7 +76,6 @@ export class WsHub {
         }
     }
 
-    // Broadcast to all clients
     broadcast(env: ServerEnvelope) {
         const msg = JSON.stringify(env);
         let delivered = 0;

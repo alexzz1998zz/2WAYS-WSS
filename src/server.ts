@@ -3,7 +3,8 @@ import { WsHub } from './wsHub';
 import { startWatcher } from './watcher';
 
 const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL || process.env.POLYGON_WSS_URL;
-const WS_PORT = Number(process.env.WS_PORT || 8080);
+
+const WS_PORT = Number(process.env.PORT || process.env.WS_PORT || 8080);
 const MIN_USDC = String(process.env.MIN_USDC || '500');
 
 if (!POLYGON_RPC_URL) {
