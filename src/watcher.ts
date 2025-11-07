@@ -1,3 +1,4 @@
+// src/watcher.ts
 import {
     createPublicClient,
     webSocket,
@@ -7,12 +8,24 @@ import {
     getAddress,
 } from 'viem';
 import { polygon } from 'viem/chains';
-import type { TradePayload } from './types';
+import type { ServerEnvelope, TradePayload } from './types';
 import { fetchMarket } from './market';
 import { pushRecentTrade } from './store';
 import { fromUnits, toUnits, USDC_DEC, short } from './utils';
-import type { WsHub } from './wsHub';
 
+/** Minimal broadcaster the server passes in (HTTP+WS combo). */
+export type Broadcaster = {
+    broadcast: (env: ServerEnvelope) => void;
+    notifyAll: (topic: string, payload: unknown) => void;
+};
+
+export type WatcherOpts = {
+    rpcUrl: string;
+    minUsdc: string; // decimal string (e.g. "500")
+    hub: Broadcaster;
+};
+
+/** Addresses (checksummed) */
 const ADDR = {
     USDCe: getAddress('0x2791bca1f2de4661ed88a30c99a7a9449aa84174'),
     EX_CTF: getAddress('0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e'),
@@ -21,6 +34,7 @@ const ADDR = {
 };
 const EXCHANGES = new Set([ADDR.EX_CTF, ADDR.EX_NEG]);
 
+/** ABIs (events) */
 const ERC20_Transfer = parseAbiItem(
     'event Transfer(address indexed from, address indexed to, uint256 value)'
 );
@@ -31,15 +45,10 @@ const ERC1155_Batch = parseAbiItem(
     'event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)'
 );
 
-export type WatcherOpts = {
-    rpcUrl: string;
-    minUsdc: string; // decimal string (e.g. "500")
-    hub: WsHub;
-};
-
 export async function startWatcher({ rpcUrl, minUsdc, hub }: WatcherOpts) {
     const THRESHOLD = toUnits(minUsdc, USDC_DEC);
 
+    // Viem transport: ws for wss:// or ws://; http for http(s) RPC
     const transport = rpcUrl.startsWith('ws') ? webSocket(rpcUrl) : http(rpcUrl);
     const client = createPublicClient({ chain: polygon, transport });
 
@@ -67,6 +76,8 @@ export async function startWatcher({ rpcUrl, minUsdc, hub }: WatcherOpts) {
 
                             const F = getAddress(from);
                             const T = getAddress(to);
+
+                            // touch one of the exchanges & pass threshold
                             if (!(EXCHANGES.has(F) || EXCHANGES.has(T))) continue;
                             if (value < THRESHOLD) continue;
 
@@ -86,6 +97,7 @@ export async function startWatcher({ rpcUrl, minUsdc, hub }: WatcherOpts) {
                                 tx: short(log.transactionHash!),
                             });
 
+                            // fetch receipt → parse ERC1155 transfers
                             const receipt = await client.getTransactionReceipt({ hash: log.transactionHash! });
                             const decoded = parseEventLogs({
                                 abi: [ERC1155_Single, ERC1155_Batch],
@@ -93,7 +105,8 @@ export async function startWatcher({ rpcUrl, minUsdc, hub }: WatcherOpts) {
                                 strict: false,
                             });
 
-                            const net = new Map<string, bigint>(); // tokenId -> net shares to trader
+                            // net shares to trader by tokenId
+                            const net = new Map<string, bigint>();
                             for (const ev of decoded) {
                                 if (!ev.address) continue;
                                 const evAddr = getAddress(ev.address as `0x${string}`);
@@ -153,6 +166,7 @@ export async function startWatcher({ rpcUrl, minUsdc, hub }: WatcherOpts) {
                                 blockTimestamp: new Date().toISOString(),
                             };
 
+                            // memory + broadcast
                             pushRecentTrade(trade);
                             hub.broadcast({ type: 'new_trade', trade });
                         } catch (e) {
